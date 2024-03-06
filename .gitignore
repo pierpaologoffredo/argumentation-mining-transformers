@@ -174,3 +174,4 @@ output/
 data/final_data
 data/mix
 data/real_data
+*.xlsx
