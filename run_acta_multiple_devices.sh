@@ -9,7 +9,7 @@ set -ex
 INPUT_DIR=./data/neoplasm/
 OUTPUT_DIR=./output
 CHECKPOINT_PATH=checkpoints
-TASK_TYPE=seq-tag
+TASK_TYPE=rel-class
 MODEL=bert
 CACHE_DIR=./cache
 EVALUATION_SPLIT=test

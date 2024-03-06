@@ -34,6 +34,11 @@ from typing import Dict, Optional, Tuple, Union
 from acta.data import RelationClassificationDataModule, SequenceTaggingDataModule
 from acta.models import RelationClassificationTransformerModule, SequenceTaggingTransformerModule
 from acta.utils import compute_metrics, compute_seq_tag_labels_metrics
+from acta.utils import compute_seq_tag_labels_metrics, seq_f1_score, seq_accuracy_score, compute_seqeval_metrics
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+import pandas as pd
+from seqeval.metrics import classification_report as seqeval_classification_report
 
 
 # Available models to train
@@ -41,6 +46,7 @@ MODELS = {
     'bert': 'bert-base-uncased',
     'biobert': 'monologg/biobert_v1.1_pubmed',
     'deberta-v3': 'microsoft/deberta-v3-base',
+    'distilbert': 'distilbert-base-uncased', 
     'roberta': 'roberta-base',
     'scibert-monolog': 'monologg/scibert_scivocab_uncased',
     'scibert-allenai': 'allenai/scibert_scivocab_uncased',
@@ -280,19 +286,47 @@ def evaluate_model(data_module: pl.LightningDataModule,
     elif config.task_type == 'seq-tag':
         # Predictions are a list of lists of tuples, where each tuple has the form
         # (token, predicted_label, true_label)
-        true_labels = []
-        pred_labels = []
-        for sentence in decoded_predictions:
-            true_labels.extend([token[2] for token in sentence])
-            pred_labels.extend([token[1] for token in sentence])
-        with open(results_dir / f'{model_name}_predictions.conll', 'w') as fh:
-            print("\n\n".join(["\n".join(["\t".join(token) for token in sentence])
-                               for sentence in decoded_predictions]), file=fh)
         if config.relevant_labels is not None:
             relevant_labels = config.relevant_labels
         else:
             relevant_labels = [lbl for lbl in data_module.label2id.keys()
                                if lbl not in {'X', 'PAD'}]
+        true_labels = []
+        pred_labels = []
+        
+        true_seq_labels = []
+        pred_seq_labels = []
+        
+        tok_seq = []
+        tok_list = []
+        
+        
+        for sentence in decoded_predictions:
+            true_labels.extend([token[2] for token in sentence])
+            pred_labels.extend([token[1] for token in sentence])
+            
+            true = [token[2] for token in sentence]
+            pred = [token[1] for token in sentence]
+            
+            tok_seq = [token[0] for token in sentence]
+            
+            pred = [p if p in relevant_labels else 'O' for p in pred]
+            
+            true_seq_labels.append(true)
+            pred_seq_labels.append(pred)
+            tok_list.append(tok_seq)
+            
+        with open(results_dir / f'{model_name}_pred_seqeval.txt', 'w') as f:
+            for tk, tt, pt in zip(tok_list, true_seq_labels, pred_seq_labels):
+                if tt != pt:
+                    final_line = str(tk) + '\n' + str(tt) + '\n' + str(pt) + '\n\n'
+                    f.write(final_line)
+                
+        # print(decoded_predictions[0])
+            
+        with open(results_dir / f'{model_name}_predictions.conll', 'w') as fh:
+            print("\n\n".join(["\n".join(["\t".join(token) for token in sentence])
+                               for sentence in decoded_predictions]), file=fh)
         metrics = compute_metrics(
             true_labels, pred_labels,
             relevant_labels=relevant_labels,
@@ -303,13 +337,27 @@ def evaluate_model(data_module: pl.LightningDataModule,
             labels=list(data_module.label2id.keys()),
             prefix="eval"
         )
-        metrics = dict(**metrics, **seq_tag_metrics)
+        
+        seqeval_metrics = compute_seqeval_metrics(
+            true_seq_labels, pred_seq_labels,
+            labels=list(data_module.label2id.keys()),
+            prefix="eval"
+        )
+        
+        metrics = dict(**metrics, **seq_tag_metrics, **seqeval_metrics)
 
+        metrics["seqeval_classification_report"] = seqeval_classification_report(
+            true_seq_labels, pred_seq_labels, zero_division=0
+        )
+        
     hf_model, task_name = model_name.split('_', 2)[:2]
     for metric, value in metrics.items():
         with open(results_dir / f'{hf_model}_{task_name}_{metric}.csv', 'at') as fh:
             csv_writer = csv.writer(fh)
             csv_writer.writerow([model_name, value])
+    
+    seq_eval_data = pd.DataFrame({'true':true_seq_labels, 'pred': pred_seq_labels})
+    seq_eval_data.to_csv(results_dir / f'{model_name}_seq_eval_pred.csv', index=False)
 
     with open(results_dir / f'{model_name}_report.txt', 'wt') as fh:
         print(
@@ -324,6 +372,13 @@ def evaluate_model(data_module: pl.LightningDataModule,
 
     return metrics
 
+    # labels=list([lbl for lbl in data_module.label2id.keys() if lbl != 'PAD'])
+    # cm = confusion_matrix(true_labels, pred_labels, labels=labels, normalize='true')
+    # pred = pd.DataFrame({'true':true_labels, 'pred':pred_labels})
+    # pred.to_csv(results_dir / f'{model_name}_cm.csv', index=False)
+    # disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    # disp.plot()
+    # plt.savefig(results_dir / f'{model_name}_cm.png')
 
 def evaluate_models(data_module: pl.LightningDataModule, model: pl.LightningModule,
                     config: argparse.Namespace, trainer: Optional[pl.Trainer] = None,
@@ -449,7 +504,7 @@ def evaluate_models(data_module: pl.LightningDataModule, model: pl.LightningModu
                     )
                 metrics = evaluate_model(data_module, checkpoint_file, config, trainer,
                                          checkpoint_name)
-                trainer.logger.log_metrics(metrics, step=checkpoint_step)
+                # trainer.logger.log_metrics(metrics, step=checkpoint_step)
 
         if last_model_checkpoint is not None:
             # Evaluates the final checkpoint (if exists)
@@ -457,12 +512,12 @@ def evaluate_models(data_module: pl.LightningDataModule, model: pl.LightningModu
             final_model_name += f"step={last_checkpoint_step:05d}"
             metrics = evaluate_model(data_module, last_model_checkpoint, config, trainer,
                                      final_model_name)
-            trainer.logger.log_metrics(metrics, step=last_checkpoint_step)
+            # trainer.logger.log_metrics(metrics, step=last_checkpoint_step)
     else:
         final_model_name = f"{model_name}_epoch={last_checkpoint_epoch:02d}_"
         final_model_name += f"step={last_checkpoint_step:05d}"
         metrics = evaluate_model(data_module, model, config, trainer, final_model_name)
-        trainer.logger.log_metrics(metrics, step=last_checkpoint_step)
+        # trainer.logger.log_metrics(metrics, step=last_checkpoint_step)
 
 
 if __name__ == "__main__":
@@ -651,6 +706,15 @@ if __name__ == "__main__":
     parser.add_argument("--debug",
                         action="store_true",
                         help="Set for debug mode.")
+    parser.add_argument("--crf-loss",
+                        action="store_true",
+                        help="Only useful for Sequence Tagging trainings. "
+                             "If true the loss function uses Conditional Random Fields.")
+    parser.add_argument("--only-crf",
+                        action="store_true",
+                        help="Only useful for Sequence Tagging trainings. "
+                             "If true the loss function uses only Conditional Random Fields.")
+    
     config = parser.parse_args()
 
     logging.basicConfig(
@@ -782,7 +846,9 @@ if __name__ == "__main__":
             weight_decay=config.weight_decay,
             adam_epsilon=config.adam_epsilon,
             warmup_steps=config.warmup_steps,
-            classes_weights=data_module.classes_weights if config.weighted_loss else None
+            classes_weights=data_module.classes_weights if config.weighted_loss else None,
+            crf_loss=config.crf_loss,
+            only_crf=config.only_crf
         )
 
     if config.train:

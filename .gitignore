@@ -167,3 +167,10 @@ data/casimedicos/
 /*output*/
 /*logs*/
 test*.ipynb
+
+# Specific directories
+results/
+output/
+data/final_data
+data/mix
+data/real_data
