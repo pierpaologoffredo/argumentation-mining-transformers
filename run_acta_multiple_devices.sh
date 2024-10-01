@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+#SBATCH --job-name=argminC
+#SBATCH -e output/slurm_%A.err
+#SBATCH -o output/slurm_%A.out
+
+#SBATCH --time=0-24:00:00
+#SBATCH --account=desinformation
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:3
+
+module purge
+module load miniconda
+module load gcc/11.3.0
+conda activate rest_am
+
 
 set -ex
 
@@ -6,23 +20,26 @@ set -ex
 # it uses all Non-CPU devices available, but it uses a single device for
 # evaluation
 
-INPUT_DIR=./data/neoplasm/
+INPUT_DIR=./data/component_data/
 OUTPUT_DIR=./output
-CHECKPOINT_PATH=checkpoints
 TASK_TYPE=seq-tag
+LABELS="O B-Claim I-Claim B-Premise I-Premise"
+CHECKPOINT_PATH=checkpoints
 MODEL=bert
 CACHE_DIR=./cache
 EVALUATION_SPLIT=test
 EPOCHS=3
-BATCH_SIZE=8
-MAX_SEQ_LENGTH=256
-LEARNING_RATE=2e-5
-LABELS="O B-Claim I-Claim B-Premise I-Premise"
+BATCH_SIZE=16
+MAX_SEQ_LENGTH=32
+LEARNING_RATE=4e-5
 NUM_DEVICES=-1
 NUM_WORKERS=-1
 LOG_STEPS=50
 SAVE_STEPS=100
 RANDOM_SEED=42
+
+# TASK_TYPE=rel-class
+# LABELS="noRel Support Attack"
 
 python ./run_acta.py \
   --input-dir $INPUT_DIR \

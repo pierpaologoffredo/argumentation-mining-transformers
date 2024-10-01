@@ -21,7 +21,7 @@ import torch.nn as nn
 import warnings
 
 from torchcrf import CRF
-from transformers import AutoModel
+from transformers import AutoModel, AutoModelForTokenClassification
 from typing import Any, Dict, Optional
 
 from .base import BaseTransformerModule
@@ -79,6 +79,8 @@ class SequenceTaggingTransformerModule(BaseTransformerModule):
                  weight_decay: float = 0.0,
                  adam_epsilon: float = 1e-8,
                  warmup_steps: int = 0,
+                 crf_loss: bool = False,
+                 only_crf: bool = False,
                  **kwargs):
         super().__init__(model_name_or_path=model_name_or_path,
                          label2id=label2id, id2label=id2label,
@@ -87,53 +89,100 @@ class SequenceTaggingTransformerModule(BaseTransformerModule):
                          learning_rate=learning_rate, weight_decay=weight_decay,
                          adam_epsilon=adam_epsilon, warmup_steps=warmup_steps,
                          **kwargs)
+        if crf_loss:
+            self.model = AutoModel.from_pretrained(
+                model_name_or_path,
+                config=self.config,
+                cache_dir=cache_dir
+            )
+            self.rnn = nn.GRU(self.config.hidden_size,
+                            self.config.hidden_size,
+                            batch_first=True,
+                            bidirectional=True)
+            self.linear = nn.Linear(2 * self.config.hidden_size,
+                                    self.config.num_labels)
 
-        self.model = AutoModel.from_pretrained(
-            model_name_or_path,
-            config=self.config,
-            cache_dir=cache_dir
-        )
-        self.rnn = nn.GRU(self.config.hidden_size,
-                          self.config.hidden_size,
-                          batch_first=True,
-                          bidirectional=True)
-        self.linear = nn.Linear(2 * self.config.hidden_size,
-                                self.config.num_labels)
+            self.crf = CRF(self.config.num_labels,
+                        batch_first=True)
+        elif only_crf:
+            print("I'm using only AutoModel + CRF")
+            self.model = AutoModel.from_pretrained(
+                model_name_or_path,
+                config=self.config,
+                cache_dir=cache_dir
+            )
+            # self.linear = nn.Linear(2 * self.config.hidden_size,
+            #                         self.config.num_labels)
+            self.linear = torch.nn.Linear(self.model.config.hidden_size, 
+                                          self.config.num_labels)
 
-        self.crf = CRF(self.config.num_labels,
-                       batch_first=True)
+            self.crf = CRF(self.config.num_labels,
+                        batch_first=True)
+        else:
+            print("I'm using AutoModelForTokenClassification")
+            self.model = AutoModelForTokenClassification.from_pretrained(
+                model_name_or_path,
+                config=self.config,
+                cache_dir=cache_dir
+            )
 
     def forward(self, **inputs):
         outputs = self.model(**inputs)
-        rnn_out, _ = self.rnn(outputs[0])
-        emissions = self.linear(rnn_out)
-        with warnings.catch_warnings():
-            # Catch deprecation warning from pytorch-crf
-            warnings.simplefilter('ignore', category=UserWarning)
-            path = torch.LongTensor(self.crf.decode(emissions))
+        
+        if self.hparams.crf_loss:
+            rnn_out, _ = self.rnn(outputs[0])
+            emissions = self.linear(rnn_out)
+            with warnings.catch_warnings():
+                # Catch deprecation warning from pytorch-crf
+                warnings.simplefilter('ignore', category=UserWarning)
+                path = torch.LongTensor(self.crf.decode(emissions))
 
-        return path, emissions
+            return path, emissions
+        elif self.hparams.only_crf:
+            
+            emissions = outputs[0]  # Assuming outputs[0] contains the hidden states
+
+            # Project the hidden states to the number of labels using a linear layer
+            projected_emissions = self.linear(emissions)
+
+            with warnings.catch_warnings():
+                # Catch deprecation warning from pytorch-crf
+                warnings.simplefilter('ignore', category=UserWarning)
+                path = torch.LongTensor(self.crf.decode(projected_emissions))
+            return path, projected_emissions
+        else:
+            return outputs
 
     def _loss(self, batch: Dict[str, Any]) -> torch.Tensor:
-        labels = batch.pop('labels')
-        path, emissions = self(**batch)
-        if self.hparams.masked_label_id is not None:
-            mask = (labels != self.hparams.masked_label_id)
-        else:
-            mask = None
+        if self.hparams.crf_loss or self.hparams.only_crf:
+            labels = batch.pop('labels')
+            path, emissions = self(**batch)
+            # FIXME: MLFlow Logger runs the same batch twice for some reason, thus
+            # if I don't restore the labels it fails
+            batch["labels"] = labels
+            if self.hparams.masked_label_id is not None:
+                mask = (labels != self.hparams.masked_label_id)
+            else:
+                mask = None
 
-        with warnings.catch_warnings():
-            # Catch deprecation warning from pytorch-crf
-            warnings.simplefilter('ignore', category=UserWarning)
-            loss = -self.crf(emissions, labels, mask=mask)
+            with warnings.catch_warnings():
+                # Catch deprecation warning from pytorch-crf
+                warnings.simplefilter('ignore', category=UserWarning)
+                loss = -self.crf(emissions, labels, mask=mask)
+        else:
+            loss = self(**batch).loss
         return loss
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         labels = batch.pop('labels', None)
-        path, emissions = self(**batch)
+        if self.hparams.crf_loss or self.hparams.only_crf:
+            path, emissions = self(**batch)
+            predictions = path.tolist()
+        else:
+            predictions = self(**batch).logits.argmax(dim=-1).tolist()
 
         return {
             "input_ids": batch.input_ids.tolist(),
             "labels": labels.tolist() if labels is not None else None,
-            "predictions": path.tolist()
+            "predictions": predictions
         }
