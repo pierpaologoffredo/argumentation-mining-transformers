@@ -167,10 +167,8 @@ data/casimedicos/
 /*output*/
 /*logs*/
 test*.ipynb
-<<<<<<< HEAD
 *.sh
 *.xlsx
-=======
 
 # Specific directories
 results/
@@ -179,4 +177,3 @@ data/final_data
 data/mix
 data/real_data
 *.xlsx
->>>>>>> fdbe45eacadfbee8cfb2525bc0db831918c43481
