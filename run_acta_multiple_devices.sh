@@ -22,9 +22,14 @@ set -ex
 
 INPUT_DIR=./data/component_data/
 OUTPUT_DIR=./output
+<<<<<<< HEAD
 TASK_TYPE=seq-tag
 LABELS="O B-Claim I-Claim B-Premise I-Premise"
 CHECKPOINT_PATH=checkpoints
+=======
+CHECKPOINT_PATH=checkpoints
+TASK_TYPE=rel-class
+>>>>>>> fdbe45eacadfbee8cfb2525bc0db831918c43481
 MODEL=bert
 CACHE_DIR=./cache
 EVALUATION_SPLIT=test
